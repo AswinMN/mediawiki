@@ -1,7 +1,7 @@
 # Mediawiki
 
 Application Installer
-Introduction
+
 The Ansible scripts here runs on a multi Virtual Machine (VM) setup.
 
 All pods run with replication=1. If higher replication is needed, accordingly, the number of VMs needed will be higher.
