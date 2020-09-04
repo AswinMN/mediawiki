@@ -1,0 +1,27 @@
+imageTag: 1.34
+# Minimal install test values
+ingress:
+  hosts:
+    - hostname: wiki-test.triumf.ca
+      secretName: wiki-test-triumf-ca-tls
+      letsEncrypt:
+        enabled: false
+        issuer: letsencrypt-staging
+mediawiki:
+  wgDBServers:
+    - wiki-test-m-m
+  wgDBName: wiki
+  wgDBPrefix: wiki_
+  wgEmergencyContact: dthomson@triumf.ca
+  wgPasswordSender: dthomson@triumf.ca
+  wgScriptPath:
+  adminPassword: admin123
+  wgDBPassword: dbuser123
+  wgDBAdminPassword: dbadmin123
+  wgExternalLinkTarget: _blank
+nginx:
+  realIPFrom:
+    - 0.0.0.0/0
+registry: 
+  name: registry.triumf.ca
+

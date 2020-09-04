@@ -1,0 +1,12 @@
+{{- if .Values.rbac.enabled }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ template "mediawiki.saname" . }}
+  namespace: {{ .Release.Namespace }}
+{{- if and .Values.registry.password .Values.registry.user }}
+imagePullSecrets:
+- name: {{ template "mediawiki.fullname" . }}-imagepull-secrets
+{{- end }}
+{{- end }}

@@ -1,0 +1,9 @@
+mediawiki:
+  wgGroupPermissions:
+    bureaucrat:
+      usermerge: true
+  extensions:
+    userMerge:
+      enabled: true
+
+

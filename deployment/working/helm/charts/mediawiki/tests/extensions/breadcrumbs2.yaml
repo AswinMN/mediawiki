@@ -1,0 +1,4 @@
+mediawiki:
+  extensions:
+    breadCrumbs2:
+      enabled: true

@@ -1,0 +1,437 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ template "mediawiki.fullname" . }}
+  labels:
+    app: mediawiki
+    triumf.ca/hostname: {{ .Values.hostname }}
+    triumf.ca/path: {{ default "/" .Values.mediawiki.wgScriptPath | trimPrefix "/" | replace "/" "-" | quote }}
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      app: mediawiki
+      triumf.ca/hostname: {{ .Values.hostname }}
+      triumf.ca/path: {{ default "/" .Values.mediawiki.wgScriptPath | trimPrefix "/" | replace "/" "-" | quote }}
+  template:
+    metadata:
+      annotations:
+        "checksum/config": {{ printf "%s - %s" (include (print $.Template.BasePath "/cm.yaml") .) (include (print $.Template.BasePath "/secrets.yaml") .) | sha256sum }}
+      labels:
+        app: mediawiki
+        triumf.ca/hostname: {{ .Values.hostname }}
+        triumf.ca/path: {{ default "/" .Values.mediawiki.wgScriptPath | trimPrefix "/" | replace "/" "-" | quote }}
+    spec:
+{{- if .Values.rbac.enabled }}
+      serviceAccountName: {{ template "mediawiki.saname" . }}
+{{- end }}
+      initContainers:
+{{- if and (.Values.migration.url) (ne .Values.migration.url "invalid") }}
+        - name: mediawiki-static-migrate
+          image: alpine:3.7
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          env:
+            - name: MEDIAWIKI_IMAGES
+              value: /tmp/images
+            - name: MIGRATION_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ template "mediawiki.fullname" . }}
+                  key: migrationURL
+            - name: MIGRATION_IP
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ template "mediawiki.fullname" . }}
+                  key: migrationIP
+            - name: MIGRATION_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ template "mediawiki.fullname" . }}-migration
+                  key: username
+            - name: MIGRATION_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ template "mediawiki.fullname" . }}-migration
+                  key: password
+          command:
+            - sh
+            - "-c"
+            - |
+              set -ex
+              apk add --no-cache wget
+
+              # If there's already content in the images directory, we don't need to migrate
+              if [ -d "${MEDIAWIKI_IMAGES}" ] && \
+                [ "$(ls -1 ${MEDIAWIKI_IMAGES} | wc -l)" -ne 0 ]; then
+                exit 0
+              fi
+
+              if [ ! -z "${MIGRATION_URL}" ]; then
+
+                URL=$MIGRATION_URL
+                HOSTNAME=$(echo $URL | sed 's;^https\?://\([^/:]\+\).*;\1;')
+                if [ ! -z "${MIGRATION_IP}" ]; then
+                    URL=$(echo $URL | sed "s/${HOSTNAME}/${MIGRATION_IP}/")
+                fi
+
+                if [ -z "${MIGRATION_USER}" ]; then
+                  wget -S -O - --header="Host: ${HOSTNAME}" "${URL}" | tar -C "${MEDIAWIKI_IMAGES}" -xvj
+                else
+                  set +x
+                  wget -S -O - --http-user="${MIGRATION_USER}" --http-password="${MIGRATION_PASSWORD}" --header="Host: ${HOSTNAME}" "${URL}" | tar -C "${MEDIAWIKI_IMAGES}" -xvj
+                fi
+
+                # www-data
+                chown -R 33:33 "${MEDIAWIKI_IMAGES}"
+              fi
+
+              exit 0
+          volumeMounts:
+            - name: wiki
+              mountPath: /tmp/images
+{{- end }}
+        - name: mediawiki-init
+          image: "{{ .Values.image }}:{{ .Values.imageTag }}"
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          env:
+            - name: MEDIAWIKI_ROOT
+              value: /var/www/html
+            - name: WG_SCRIPT_PATH
+              value: {{ .Values.mediawiki.wgScriptPath | default "/" }}
+            - name: WG_LANGUAGE_CODE
+              value: {{ default "en" .Values.mediawiki.wgLanguageCode }}
+            - name: WG_DB_ADMIN_USER
+              value: {{ .Values.mediawiki.wgDBAdminUser }}
+            - name: WG_DB_TYPE
+              value: {{ .Values.mediawiki.wgDBType }}
+            - name: WG_DB_SERVER
+              value: {{ (index .Values.mediawiki.wgDBServers 0) }}
+            - name: WG_DB_NAME
+              value: {{ .Values.mediawiki.wgDBName }}
+            - name: WG_DB_PORT
+              value: {{ .Values.mediawiki.wgDBPort | quote }}
+            - name: WG_DB_USER
+              value: {{ .Values.mediawiki.wgDBUser }}
+            - name: WG_DB_PREFIX
+              value: {{ .Values.mediawiki.wgDBPrefix }}
+            - name: WG_SERVER
+              value: {{ .Values.hostname }}
+            - name: WG_SITENAME
+              value: {{ .Values.mediawiki.wgSitename }}
+            - name: ADMIN
+              value: {{ .Values.mediawiki.admin }}
+            - name: WG_DB_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ template "mediawiki.fullname" . }}-password-secrets
+                  key: db-admin-password
+            - name: WG_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ template "mediawiki.fullname" . }}-password-secrets
+                  key: db-wiki-password
+          command:
+            - /bin/bash
+            - "-c"
+            - |
+              set -ex
+
+              if [ -f /var/localsettings/LocalSettings.php ]; then
+                cp -f /var/localsettings/LocalSettings.php $MEDIAWIKI_ROOT/LocalSettings.php
+              fi
+              TMP_PW_FILE=/tmp/adminpw/password
+
+              # Wait for DB to become available
+              MAX_DB_WAIT=120
+              count=0
+
+              while [ "${count}" -lt "${MAX_DB_WAIT}" ] && ! mysql --defaults-extra-file=/tmp/my/my.cnf -N -h $WG_DB_SERVER -e 'SELECT 1';  do
+                sleep 1
+                count=$((count+1))
+              done
+
+              # No LocalSettings = first run
+              if [ ! -f $MEDIAWIKI_ROOT/LocalSettings.php ]; then
+                NUM_TABLES=$(mysql --defaults-extra-file=/tmp/my/my.cnf -N -h $WG_DB_SERVER -e 'SHOW TABLES;' $WG_DB_NAME | wc -l)
+
+                # It's a first-run, but the database is actually populated, so
+                # before going further, we should make sure that the existing
+                # database is up-to-date with the current MediaWiki verison. Once
+                # that's done, we treat it like any other existing wiki database.
+                if [[ $NUM_TABLES -gt 1 ]]; then
+                  TEMPDIR=$(mktemp -d)
+
+                  echo "<?php" > $TEMPDIR/LocalSettings-upgrade.php
+
+                  echo "\$wgServer = '$WG_SERVER';" >> $TEMPDIR/LocalSettings-upgrade.php
+                  echo "\$wgDBserver = '$WG_DB_SERVER';" >> $TEMPDIR/LocalSettings-upgrade.php
+                  echo "\$wgDBname = '$WG_DB_NAME';" >> $TEMPDIR/LocalSettings-upgrade.php
+                  echo "\$wgDBuser = '$WG_DB_USER';" >> $TEMPDIR/LocalSettings-upgrade.php
+                  (
+                    set +x;
+                    echo "\$wgDBpassword = '$WG_DB_PASSWORD';" >> $TEMPDIR/LocalSettings-upgrade.php
+                    echo "\$wgDBadminuser = '$WG_DB_ADMIN_USER';" >> $TEMPDIR/LocalSettings-upgrade.php
+                    echo "\$wgDBadminpassword = '$WG_DB_ADMIN_PASSWORD';" >> $TEMPDIR/LocalSettings-upgrade.php
+                  )
+
+                  if [[ ! -z $WG_DB_PREFIX ]]; then
+                    echo "\$wgDBprefix = '$WG_DB_PREFIX';" >> $TEMPDIR/LocalSettings-upgrade.php
+                  fi
+
+                  for i in $(ls /var/mediawiki-extras/*.php | grep -v triumf-database.php); do
+                    echo "## - $i" >> $TEMPDIR/LocalSettings-upgrade.php
+                    cat $i | sed 's/<?php\|?>//g' >> $TEMPDIR/LocalSettings-upgrade.php
+                  done
+
+                  echo '$wgShowExceptionDetails = true;' >> $TEMPDIR/LocalSettings-upgrade.php
+                  echo '$wgShowDBErrorBacktrace = true;' >> $TEMPDIR/LocalSettings-upgrade.php
+                  echo "?>" >> $TEMPDIR/LocalSettings-upgrade.php
+
+                  cat $TEMPDIR/LocalSettings-upgrade.php
+                  php $MEDIAWIKI_ROOT/maintenance/update.php --conf $TEMPDIR/LocalSettings-upgrade.php >&2
+
+                  rm -rf $TEMPDIR
+                fi
+
+                php $MEDIAWIKI_ROOT/maintenance/install.php --conf "$MEDIAWIKI_ROOT" \
+                  --scriptpath="$WG_SCRIPT_PATH" --lang="$WG_LANGUAGE_CODE" \
+                  --installdbuser="$WG_DB_ADMIN_USER" \
+                  --installdbpass="$WG_DB_ADMIN_PASSWORD" --dbtype="$WG_DB_TYPE" \
+                  --dbserver="$WG_DB_SERVER" --dbport="$WG_DB_PORT" --dbuser="$WG_DB_USER" \
+                  --dbpass="$WG_DB_PASSWORD" --dbname="$WG_DB_NAME" --dbprefix="$WG_DB_PREFIX" \
+                  --passfile="$TMP_PW_FILE" --server="http://${WG_SERVER}" "$WG_SITENAME" "$ADMIN" >&2
+
+                # Add custom TRIUMF config files
+                for i in $(ls /var/mediawiki-extras/*.php | grep -v triumf-database.php); do
+                  cat $i | sed 's/<?php\|?>//g' >> $MEDIAWIKI_ROOT/LocalSettings.php
+                done
+                #                echo -en "foreach(glob(\"$MEDIAWIKI_ROOT/extras/*.php\") as \$file) {\n" >> $MEDIAWIKI_ROOT/LocalSettings.php
+                #                echo -en "    require_once(\$file);\n" >> $MEDIAWIKI_ROOT/LocalSettings.php
+                #                echo -en "}\n" >> $MEDIAWIKI_ROOT/LocalSettings.php
+
+                if [ "${DEBUGGING-0}" -eq "1" ]; then
+                  echo '$wgShowExceptionDetails = true;' >> $MEDIAWIKI_ROOT/LocalSettings.php
+                  echo '$wgShowDBErrorBacktrace = true;' >> $MEDIAWIKI_ROOT/LocalSettings.php
+                fi
+              fi
+
+              echo "GRANT REPLICATION CLIENT ON *.* TO '$WG_DB_USER'@'%'" | mysql --defaults-extra-file=/tmp/my/my.cnf -h $WG_DB_SERVER
+
+              # IF it's not a first-run, we might still need to upgrade from a
+              # previous version. Running upgrade on the same version is harmless
+              # so we'll just do it every time
+              php $MEDIAWIKI_ROOT/maintenance/update.php --conf $MEDIAWIKI_ROOT/LocalSettings.php >&2
+              if [ -f extensions/SemanticMediaWiki/.smw.json ]; then
+                mkdir -p /var/localsettings/extensions/SemanticMediaWiki
+                cp -f extensions/SemanticMediaWiki/.smw.json /var/localsettings/extensions/SemanticMediaWiki
+              fi
+              cp -f $MEDIAWIKI_ROOT/LocalSettings.php /var/localsettings
+          volumeMounts:
+            - name: adminpw-vol
+              mountPath: /tmp/adminpw
+              readOnly: true
+            - name: my-admin-vol
+              mountPath: /tmp/my
+            - name: mediawiki-extra-conf-vol
+              mountPath: /var/mediawiki-extras
+            - name: localsettings-vol
+              mountPath: /var/localsettings
+            - name: php-conf-vol
+              mountPath: /usr/local/etc/php/conf.d/php-mediawiki.ini
+              subPath: php-mediawiki.ini
+              readOnly: true
+      containers:
+        - name: nginx-ip-auth
+          image: nginx:1.17.3-alpine
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          readinessProbe:
+            httpGet:
+              path: {{ printf "%s%s" (default "/" .Values.mediawiki.wgScriptPath) "index.php/Main_Page" }}
+              port: 8080
+              httpHeaders:
+                - name: X-Health-Check
+                  value: {{ .Values.apache.healthChecksum }}
+                - name: Host
+                  value: {{ .Values.hostname }}
+            initialDelaySeconds: {{ .Values.apache.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.apache.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.apache.readinessProbe.timeoutSeconds }}
+          livenessProbe:
+            httpGet:
+              path: {{ printf "%s%s" (default "/" .Values.mediawiki.wgScriptPath) "index.php/Main_Page" }}
+              port: 8080
+              httpHeaders:
+                - name: X-Health-Check
+                  value: {{ .Values.apache.healthChecksum }}
+                - name: Host
+                  value: {{ .Values.hostname }}
+            initialDelaySeconds: {{ .Values.apache.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.apache.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.apache.livenessProbe.timeoutSeconds }}
+          volumeMounts:
+            - name: nginx-proxy-conf-vol
+              mountPath: /etc/nginx/conf.d
+        - name: mediawiki
+          image: "{{ .Values.image }}:{{ .Values.imageTag }}"
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          env:
+            - name: MEDIAWIKI_ROOT
+              value: '/var/www/html'
+            - name: TZ
+              value: {{ .Values.mediawiki.wgLocaltimezone }}
+{{- if and .Values.backups.www.enabled (upper .Values.backups.www.authType | eq "BASIC") }}
+            - name: BACKUPS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ template "mediawiki.fullname" . }}-password-secrets
+                  key: backups-password
+{{- end }}
+          command:
+            - bash
+            - "-c"
+            - |
+              set -ex
+
+              env
+              if [ ! -z "${BACKUPS_PASSWORD}" ]; then
+                set +x
+                htpasswd -b -c /tmp/htpasswd-backups backups "${BACKUPS_PASSWORD}"
+              fi
+
+              cp -f /var/localsettings/LocalSettings.php $MEDIAWIKI_ROOT/LocalSettings.php
+
+              if [ -f /var/localsettings/extensions/SemanticMediaWiki/.smw.json ]; then
+                cp -f /var/localsettings/extensions/SemanticMediaWiki/.smw.json $MEDIAWIKI_ROOT/extensions/SemanticMediaWiki/.smw.json
+              fi
+
+              apache2-foreground
+          readinessProbe:
+            httpGet:
+              path: {{ printf "%s%s" (default "/" .Values.mediawiki.wgScriptPath) "index.php/Main_Page" }}
+              port: {{ .Values.mediawiki.port }}
+              httpHeaders:
+                - name: X-Health-Check
+                  value: {{ .Values.apache.healthChecksum }}
+                - name: Host
+                  value: {{ .Values.hostname }}
+            initialDelaySeconds: {{ .Values.apache.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.apache.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.apache.readinessProbe.timeoutSeconds }}
+          livenessProbe:
+            httpGet:
+              path: {{ printf "%s%s" (default "/" .Values.mediawiki.wgScriptPath) "index.php/Main_Page" }}
+              port: {{ .Values.mediawiki.port }}
+              httpHeaders:
+                - name: X-Health-Check
+                  value: {{ .Values.apache.healthChecksum }}
+                - name: Host
+                  value: {{ .Values.hostname }}
+            initialDelaySeconds: {{ .Values.apache.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.apache.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.apache.livenessProbe.timeoutSeconds }}
+          volumeMounts:
+            - name: images
+              mountPath: {{ .Values.rootDir }}/images
+            - name: backup
+              mountPath: /backups
+            - name: php-conf-vol
+              mountPath: /etc/apache2/php-mediawiki.ini
+              subPath: php-mediawiki.ini
+              readOnly: true
+            - name: apache-cm-port-vol
+              mountPath: /etc/apache2/ports.conf
+              subPath: ports.conf
+              readOnly: true
+            - name: apache-cm-site-vol
+              mountPath: /etc/apache2/sites-enabled
+              readOnly: true
+            - name: localsettings-vol
+              mountPath: /var/localsettings
+              readOnly: true
+{{  if and .Values.backups.www.enabled (upper .Values.backups.www.authType | eq "LDAP") | or .Values.mediawiki.auth.ldap.enabled }}
+            - name: apache-conf-vol
+              mountPath: /etc/apache2/mods-enabled/ldap.load
+              subPath: ldap.load
+              readOnly: true
+            - name: apache-conf-vol
+              mountPath: /etc/apache2/mods-enabled/authnz_ldap.load
+              subPath: authnz_ldap.load
+              readOnly: true
+{{- end }}
+            - name: mediawiki-extra-conf-vol
+              mountPath: {{ .Values.rootDir }}/extras
+              readOnly: true
+      volumes:
+        - name: images
+{{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ template "mediawiki.claimname" . }}
+{{- else }}
+          emptyDir: {}
+{{- end }}
+        - name: backup
+{{- if .Values.backups.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ template "mediawiki.fullname" . }}-backup
+{{- else }}
+          emptyDir: {}
+{{- end }}
+        - name: localsettings-vol
+          emptyDir: {}
+        - name: apache-cm-port-vol
+          configMap:
+            name: {{ template "mediawiki.fullname" . }}-apache-cm
+            items:
+              - key: ports.conf
+                path: ports.conf
+                mode: 420
+        - name: apache-cm-site-vol
+          configMap:
+            name: {{ template "mediawiki.fullname" . }}-apache-cm
+            items:
+              - key: 000-default.conf
+                path: 000-default.conf
+                mode: 420
+              - key: restrict.conf
+                path: restrict.conf
+                mode: 420
+              - key: backups.conf
+                path: backups.conf
+                mode: 420
+        - name: php-conf-vol
+          configMap:
+            name: {{ template "mediawiki.fullname" . }}-php-conf
+            items:
+              - key: php-mediawiki.ini
+                path: php-mediawiki.ini
+                mode: 420
+        - name: apache-conf-vol
+          configMap:
+            name: {{ template "mediawiki.fullname" . }}-apache-conf
+            items:
+              - key: ldap.load
+                path: ldap.load
+                mode: 420
+              - key: authnz_ldap.load
+                path: authnz_ldap.load
+                mode: 420
+        - name: nginx-proxy-conf-vol
+          configMap:
+            name: {{ template "mediawiki.fullname" . }}-proxy-cm
+        - name: mediawiki-extra-conf-vol
+          configMap:
+            name: {{ template "mediawiki.fullname" . }}-extra-conf-cm
+        - name: adminpw-vol
+          secret:
+            secretName: {{ template "mediawiki.fullname" . }}-password-secrets
+            items:
+              - key: admin-password
+                path: password
+                mode: 420 # 0644
+        - name: my-admin-vol
+          secret:
+            secretName: {{ template "mediawiki.fullname" . }}-my-secrets
+            items:
+              - key: admin.cnf
+                path: my.cnf
+                mode: 420 # 0644

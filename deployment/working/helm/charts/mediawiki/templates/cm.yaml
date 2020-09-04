@@ -1,0 +1,858 @@
+{{- $allowIPToken := default (randAlphaNum 64) .Values.apache.allowIPToken }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "mediawiki.fullname" . }}
+  labels:
+    migration-config: "true"
+data:
+  migrationURL: {{ if .Values.migration.url }}{{ .Values.migration.url | quote }}{{- else }}Cg=={{- end }}
+  migrationIP: {{ if .Values.migration.ip }}{{ .Values.migration.ip | quote }}{{- else }}Cg=={{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "mediawiki.fullname" . }}-ca-cert
+  labels:
+    system-config: "true"
+data:
+{{- if .Values.mediawiki.auth.ldap.caCertificate }}
+  caCertificate: |
+{{ .Values.mediawiki.auth.ldap.caCertificate | indent 4 }}
+{{- else }}
+  caCertificate: ""
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "mediawiki.fullname" . }}-proxy-cm
+  labels:
+    nginx-config: "true"
+data:
+  default.conf: |
+    upstream app {
+        server 127.0.0.1:{{ .Values.mediawiki.port }};
+    }
+
+{{- if .Values.allowIPs }}
+    geo $allow {
+        proxy 127.0.0.1;
+{{- range $idx, $val := .Values.internalIPs }}
+        proxy {{ $val }};
+{{- end }}
+
+        default 0;
+{{- range $idx, $val := .Values.allowIPs }}
+        {{ $val }} {{ $allowIPToken }};
+{{- end }}
+    }
+{{- end }}
+
+    server {
+        listen       8080;
+        server_name  {{ .Values.hostname }};
+
+        error_log  /dev/stderr warn;
+        access_log  /dev/stderr;
+
+        real_ip_header X-Real-IP;
+
+        location / {
+{{- if .Values.allowIPs }}
+            proxy_set_header X-IP-Token   $allow;
+{{- else }}
+            proxy_set_header X-IP-Token   {{ $allowIPToken }};
+{{- end }}
+            proxy_pass http://app;
+        }
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "mediawiki.fullname" . }}-apache-cm
+  labels:
+    apache-config: "true"
+data:
+  ports.conf: |
+    Listen {{ .Values.mediawiki.port }}
+
+  000-default.conf: |
+    <VirtualHost *:{{ .Values.mediawiki.port }}>
+      # The ServerName directive sets the request scheme, hostname and port that
+      # the server uses to identify itself. This is used when creating
+      # redirection URLs. In the context of virtual hosts, the ServerName
+      # specifies what hostname must appear in the request's Host: header to
+      # match this virtual host. For the default virtual host (this file) this
+      # value is not decisive as it is used as a last resort host regardless.
+      # However, you must set it for any further virtual host explicitly.
+      #ServerName www.example.com
+
+      ServerAdmin dthomson@triumf.ca
+      DocumentRoot /var/www/html
+
+      # Available loglevels: trace8, ..., trace1, debug, info, notice, warn,
+      # error, crit, alert, emerg.
+      # It is also possible to configure the loglevel for particular
+      # modules, e.g.
+      #LogLevel info ssl:warn
+
+      SetEnv PHPRC /etc/apache2/php-mediawiki.ini
+
+      SetEnvIf X-Health-Check {{ .Values.apache.healthChecksum }} HEALTH_CHECK_REQUEST=1
+
+      LogFormat "%a %l %u %t \"%r\" %>s %b" containerlog
+      ErrorLog ${APACHE_LOG_DIR}/error.log
+      CustomLog ${APACHE_LOG_DIR}/access.log containerlog env=!HEALTH_CHECK_REQUEST
+
+{{ if .Values.apache.denyImages }}
+      <Directory /var/www/html/images>
+        Deny from all
+      </Directory>
+{{- end }}
+
+      # For most configuration files from conf-available/, which are
+      # enabled or disabled at a global level, it is possible to
+      # include a line for only one particular virtual host. For example the
+      # following line enables the CGI configuration for this host only
+      # after it has been globally disabled with "a2disconf".
+      #Include conf-available/serve-cgi-bin.conf
+    </VirtualHost>
+
+    # vim: syntax=apache ts=4 sw=4 sts=4 sr noet
+
+  restrict.conf: |
+{{- if .Values.apache.ldap.enabled }}
+    <Directory {{ .Values.rootDir }}{{ .Values.mediawiki.wgScriptPath | default "/" | trimSuffix "/" }}>
+        <If "%{HTTP:X-Health-Check} == '{{ .Values.apache.healthChecksum }}'">
+          Require all granted
+        </If>
+        <ElseIf "%{HTTP:X-IP-Token} != '{{ $allowIPToken }}'">
+          AuthType Basic
+          AuthBasicProvider ldap
+          AuthName {{ .Values.apache.authName | quote }}
+          AuthLDAPURL "ldap://{{- .Values.apache.ldap.servers | join " " -}}/{{ .Values.apache.ldap.baseDN }}?{{ .Values.apache.ldap.userID }}?sub?{{ .Values.apache.ldap.objectClass }}"
+
+{{- if .Values.apache.ldap.requireValidUser }}
+          Require valid-user
+{{- end }}
+
+{{- range $idx, $group := .Values.apache.ldap.requireGroups }}
+          Require ldap-group {{ $group }}
+{{- end }}
+          Require all denied
+        </ElseIf>
+    </Directory>
+{{- else if .Values.allowIPs }}
+    <Directory {{ .Values.rootDir }}{{ .Values.mediawiki.wgScriptPath | default "/" | trimSuffix "/" }}>
+        <If "%{HTTP:X-Health-Check} == '{{ .Values.apache.healthChecksum }}'">
+          Require all granted
+        </If>
+        <ElseIf "%{HTTP:X-IP-Token} == '{{ $allowIPToken }}'">
+          Require all granted
+        </ElseIf>
+
+        Require all denied
+    </Directory>
+{{- end }}
+
+  backups.conf: |
+{{- if and .Values.backups .Values.backups.www | and .Values.backups.www.enabled  }}
+    Alias "/_backups" "/backups"
+
+    <Directory /backups>
+        Options Indexes
+    </Directory>
+
+    <Location /_backups>
+        AuthType Basic
+        AuthName {{ .Values.backups.www.authName | default "Backups Login" | quote }}
+{{- if upper .Values.backups.www.authType | eq "LDAP" }}
+        AuthBasicProvider ldap
+        AuthLDAPURL "ldap://{{- .Values.backups.www.ldap.servers | join " " -}}/{{ .Values.backups.www.ldap.baseDN }}?{{ .Values.backups.www.ldap.userID }}?sub?{{ .Values.backups.www.ldap.objectClass }}"
+{{- if .Values.backups.www.ldap.requireValidUser }}
+        Require valid-user
+{{- end }}
+{{- range $idx, $group := .Values.backups.www.ldap.requireGroups }}
+        Require ldap-group {{ $group }}
+{{- end }}
+{{- else if upper .Values.backups.www.authType | eq "BASIC" }}
+        AuthUserFile /tmp/htpasswd-backups
+        Require valid-user
+{{- end }}
+
+    </Location>
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "mediawiki.fullname" . }}-php-conf
+data:
+  php-mediawiki.ini: |
+    include_path = ".:/var/www/html:/usr/local/lib/php"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "mediawiki.fullname" . }}-apache-conf
+  labels:
+    apache-modules: "true"
+data:
+{{- if upper .Values.backups.www.authType | eq "LDAP" | and .Values.backups.www.enabled | or .Values.apache.ldap.enabled }}
+  ldap.load: "LoadModule ldap_module /usr/lib/apache2/modules/mod_ldap.so"
+  authnz_ldap.load: "LoadModule authnz_ldap_module /usr/lib/apache2/modules/mod_authnz_ldap.so"
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "mediawiki.fullname" . }}-extra-conf-cm
+  labels:
+    mediawiki-config: "true"
+data:
+  triumf-contact.php: |
+    <?php
+
+      $wgEmergencyContact = {{ .Values.mediawiki.wgEmergencyContact | quote }};
+      $wgPasswordContact = {{ .Values.mediawiki.wgPasswordSender | quote }};
+    ?>
+
+  triumf-content.php: |
+    <?php
+
+      wfLoadExtension('Cite');
+
+      {{ template "mediawiki.wgServer" . }}
+
+      $wgMainCacheType = {{ .Values.mediawiki.wgMainCacheType }};
+
+      $wgScriptPath = {{ default "/" .Values.mediawiki.wgScriptPath | trimPrefix "/" | quote }};
+      $wgResourceBasePath = {{ default "/" .Values.mediawiki.wgScriptPath | trimPrefix "/" | quote }};
+
+      $wgLocaltimezone = {{ .Values.mediawiki.wgLocaltimezone | quote }};
+
+      $wgRunJobsAsync = {{ .Values.mediawiki.wgRunJobsAsync }};
+
+{{- range $group, $perm := .Values.mediawiki.wgGroupPermissions }}
+{{- if eq $group "_all" }}
+{{ range $permKey, $permVal := $perm }}
+      $wgGroupPermissions['*'][{{ $permKey | quote }}] = {{ if $permVal -}}true{{- else -}}false{{- end }};
+{{- end }}
+{{- else }}
+{{ range $permKey, $permVal := $perm }}
+      $wgGroupPermissions[{{ $group | quote }}][{{ $permKey | quote }}] = {{ if $permVal -}}true{{- else -}}false{{- end }};
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- range $idx, $pref := .Values.mediawiki.wgHiddenPrefs }}
+      $wgHiddenPrefs[] = {{ $pref | quote }};
+{{- end }}
+
+      $wgLogo = {{ printf "%s%s" (default "/" .Values.mediawiki.wgScriptPath ) "triumf-common/images/mids/triumf_wiki.png" | quote }};
+
+{{- if .Values.mediawiki.wgDefaultUserOptions }}
+{{- range $option, $value := .Values.mediawiki.wgDefaultUserOptions }}
+{{- if eq "math" $option }}
+      // Defined in triumf-extension-math.php
+      // $wgDefaultUserOptions[{{ $option | quote }}] = {{ $value }};
+{{- else }}
+      $wgDefaultUserOptions[{{ $option | quote }}] = {{ $value }};
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- if ne .Values.mediawiki.wgSitename "" }}
+      $wgSitename = {{ .Values.mediawiki.wgSitename | quote }};
+{{ end }}
+
+      $wgEnableUserEmail = {{ .Values.mediawiki.wgEnableUserEmail }};
+
+{{- if .Values.mediawiki.wgInvalidUsernameCharacters }}
+      $wgInvalidUsernameCharacters = '{{ .Values.mediawiki.wgInvalidUsernameCharacters }}';
+{{- end }}
+
+      $wgEnotifUserTalk = {{ .Values.mediawiki.wgEnotifUserTalk }};
+      $wgEnotifWatchlist = {{ .Values.mediawiki.wgEnotifWatchlist }};
+
+      $wgMainCacheType = {{ .Values.mediawiki.wgMainCacheType }};
+{{- if .Values.mediawiki.wgMemCachedServers }}
+      $wgMemCachedServers = array(
+{{- range $idx, $server := .Values.mediawiki.wgMemCachedServers }}
+{{- if $server.weight }}
+        array( {{ $server.hostname | quote }}, {{ $server.weight | int }} ),
+{{- else }}
+        {{ $server.hostname | quote }},
+{{- end }}
+{{- end }}
+      );
+{{- end }}
+
+{{- if .Values.mediawiki.wgDefaultSkin }}
+      $wgDefaultSkin = {{ .Values.mediawiki.wgDefaultSkin | lower | quote }};
+{{ end }}
+
+{{- if .Values.mediawiki.wgExternalLinkTarget }}
+      $wgExternalLinkTarget = {{ .Values.mediawiki.wgExternalLinkTarget | quote }};
+{{- end }}
+
+{{- if .Values.mediawiki.skins }}
+
+{{- $values := .Values }}
+
+{{- if .Values.mediawiki.skins.tweeki }}
+{{- range $idx, $option := list "wgTweekiSkinPageRenderer" "wgTweekiSkinImagePageTOCTabs" }}
+{{- if hasKey $values.mediawiki.skins.tweeki $option }}
+      ${{ $option }} = {{ index .Values.mediawiki.skins.tweeki $option }};
+{{- end }}
+{{- end }}
+
+{{- range $idx, $option := list "wgTweekiSkinCustomizedBootstrap" "wgTweekiSkinGridNon"  "wgTweekiSkinGridLeft"  "wgTweekiSkinGridRight"  "wgTweekiSkinGridBoth" "wgTweekiSkinHideLoggedin" "wgTweekiSkinHideAll" }}
+{{- if hasKey $values.mediawiki.skins.tweeki $option }}
+      ${{ $option }} = array(
+{{- range $key, $val := index $values.mediawiki.skins.tweeki $option }}
+        {{ $key | quote }} => {{ $val }},
+{{- end }}
+      );
+{{- end }}
+{{- end }}
+
+{{- range $idx, $option := list "wgTweekiSkinCustomCSS" "wgTweekiSkinAdditionalBodyClasses" }}
+{{- if hasKey $values.mediawiki.skins.tweeki $option }}
+    ${{ $option }} = array(
+{{- range $idx, $val := (index $values.mediawiki.skins.tweeki $option) }}
+      {{ $val | quote }},
+{{- end }}
+    );
+{{- end }}
+{{- end }}
+
+{{- end }}
+{{- end }}
+
+{{- if .Values.mediawiki.wgWhitelistRead }}
+      $wgWhitelistRead = array(
+{{- range $idx, $val := .Values.mediawiki.wgWhitelistRead }}
+        {{ $val | quote }},
+{{- end }}
+      );
+{{- end }}
+
+{{- if .Values.mediawiki.wgFileExtensions }}
+      $wgFileExtensions = array(
+{{- range $idx, $ext := .Values.mediawiki.wgFileExtensions }}
+        {{ $ext | quote }},
+{{- end }}
+      );
+{{- end }}
+
+{{- if .Values.mediawiki.wgFileExtensionsExtra }}
+      $wgFileExtensions = array_merge(
+        $wgFileExtensions,
+        [
+{{- range $idx, $ext := .Values.mediawiki.wgFileExtensionsExtra }}
+          {{ $ext | quote }},
+{{- end }}
+        ]
+      );
+{{- end }}
+
+    ?>
+
+  triumf-database.php: |
+    <?php
+
+      $wgDBprefix = {{ .Values.mediawiki.wgDBPrefix | quote }};
+      $wgDBname = {{ .Values.mediawiki.wgDBName | quote }};
+
+{{- $wgDBType := .Values.mediawiki.wgDBType }}
+{{- $wgDBName := .Values.mediawiki.wgDBName }}
+{{- $wgDBUser := .Values.mediawiki.wgDBUser }}
+{{- $wgDBPassword := .Values.mediawiki.wgDBPassword }}
+
+      $wgDBservers = array(
+{{- range $idx, $server := .Values.mediawiki.wgDBServers }}
+        array(
+          'host'      => {{ $server | quote }},
+          'port'      => 3306,
+{{- if eq $idx 0 }}
+          'load'      => 0,
+{{- else }}
+          'load'      => 1,
+{{- end }}
+          'type'      => {{ $wgDBType | quote }},
+          'dbname'    => {{ $wgDBName | quote }},
+          'user'      => {{ $wgDBUser | quote }},
+          'password'  => {{ $wgDBPassword | quote }},
+          'flags'     => DBO_DEFAULT,
+        ),
+{{- end }}
+      );
+    ?>
+
+  triumf-upload.php: |
+    <?php
+
+      $wgEnableUploads = {{ .Values.mediawiki.wgEnableUploads }};
+{{ if and .Values.mediawiki.wgEnableUploads .Values.mediawiki.wgMaxUploadSize }}
+      $wgMaxUploadSize = {{ .Values.mediawiki.wgMaxUploadSize | int }};
+{{- end }}
+{{ if .Values.mediawiki.wgUploadPath }}
+      $wgUploadPath = {{ .Values.mediawiki.wgUploadPath | quote }};
+{{- end }}
+    ?>
+
+  triumf-debug.php: |
+    <?php
+
+{{ if .Values.debugging }}
+      $wgShowExceptionDetails = true;
+      $wgShowDBErrorBacktrace = true;
+      $wgShowSQLErrors = true;
+{{- else }}
+      $wgShowExceptionDetails = {{ .Values.mediawiki.wgShowExceptionDetails }};
+      $wgShowDBErrorBacktrace = {{ .Values.mediawiki.wgShowDBErrorBacktrace }};
+      $wgShowSQLErrors = {{ .Values.mediawiki.wgShowSQLErrors }};
+{{ end }}
+    ?>
+
+  triumf-session.php: |
+    <?php
+
+      $wgSessionsInObjectCache = {{ if .Values.mediawiki.wgSessionsInObjectCache }}true{{- else -}}false{{- end }};
+      $wgSessionCacheType = {{ .Values.mediawiki.wgSessionCacheType }};
+      $wgObjectCacheSessionExpiry = 3600;
+    ?>
+
+  triumf-extension-ldapauthentication.php: |
+    <?php
+{{ if .Values.mediawiki.auth.ldap.enabled }}
+{{- $extension := .Values.mediawiki.auth.ldap }}
+    wfLoadExtensions( [
+      'PluggableAuth',
+      'LDAPProvider',
+      'LDAPAuthentication2',
+      'LDAPUserInfo',
+    ] );
+
+    $LDAPAuthorizationAutoAuthRemoteUserStringParser = {{ $extension.LDAPAuthorizationAutoAuthRemoteUserStringParser | quote }};
+    $LDAPAuthentication2UsernameNormalizer = {{ $extension.LDAPAuthentication2UsernameNormalizer | quote }};
+    $LDAPAuthentication2AllowLocalLogin = {{ $extension.LDAPAuthentication2AllowLocalLogin }};
+    $wgAuthRemoteuserAllowUserSwitch = {{ .Values.mediawiki.auth.wgAuthRemoteuserAllowUserSwitch }};
+
+    $wgPluggableAuth_EnableLocalLogin = {{ .Values.mediawiki.auth.wgPluggableAuth_EnableLocalLogin }};
+{{ if .Values.mediawiki.auth.wgPluggableAuth_ButtonLabelMessage }}
+    $wgPluggableAuth_ButtonLabelMessage = {{ .Values.mediawiki.auth.wgPluggableAuth_ButtonLabelMessage | quote }};
+{{- end }}
+
+    $LDAPProviderDomainConfigProvider = function() {
+      $config = [
+{{- range $domain, $domainValues := $extension.config }}
+        {{ $domain | quote }} => [
+          'connection' => [
+            "server" => {{ $domainValues.server | join " " | quote }},
+            "options" => [
+              "LDAP_OPT_DEREF" => 1
+            ],
+            "basedn" => {{ $domainValues.basedn | quote }},
+{{- if $domainValues.groupbasedn }}
+            "groupbasedn" => {{ $domainValues.groupbasedn | join " " | quote }},
+{{- end }}
+            "userbasedn" => {{ $domainValues.userbasedn | quote }},
+            "searchstring" => {{ $domainValues.searchstring | quote }},
+            "searchattribute" => {{ $domainValues.searchattribute | quote }},
+            "usernameattribute" => {{ $domainValues.usernameattribute | quote }},
+            "realnameattribute" => {{ $domainValues.realnameattribute | quote }},
+            "emailattribute" => {{ $domainValues.emailattribute | quote }},
+{{- if $domainValues.grouprequest }}
+            "grouprequest" => {{ $domainValues.grouprequest | default "MediaWiki\\Extension\\LDAPProvider\\UserGroupsRequest\\GroupMember::factory" | quote }},
+{{- end }}
+            "groupobjectclass" => {{ $domainValues.groupobjectclass | default "group" | quote }},
+            "groupattribute" => {{ $domainValues.groupattribute | default "member" | quote }},
+          ],
+{{- if $domainValues.authorization }}
+          'authorization' => [
+{{- if $domainValues.authorization.rules }}
+            'rules' => [
+{{- if $domainValues.authorization.rules.groups }}
+              'groups' => [
+{{- if $domainValues.authorization.rules.groups.required }}
+                'required' => [
+{{- range $null, $group := $domainValues.authorization.rules.groups.required }}
+                  {{ $group | quote }},
+{{- end }}
+                ]
+{{- end }}
+              ]
+{{- end }}
+            ]
+{{- end }}
+          ],
+{{- end }}
+{{- if $domainValues.userinfo }}
+          'userinfo' => [
+{{- range $group, $groupValues := $domainValues.userinfo }}
+            {{ $group | quote }} => [
+{{- range $attrName, $attrVal := $groupValues }}
+              {{ $attrName | quote }} => {{ $attrVal | quote }},
+{{- end }}
+            ]
+{{- end }}
+          ]
+{{- end }}
+        ]
+{{- end }}
+      ];
+
+      return new \MediaWiki\Extension\LDAPProvider\DomainConfigProvider\InlinePHPArray( $config );
+    };
+{{- end }}
+    ?>
+
+  triumf-extension-simplesamlphp.php: |
+    <?php
+{{- if and .Values.mediawiki.extensions.simpleSAMLphp.enabled false }}
+      ### PluggableAuth Extension Settings ###
+      $wgPluggableAuth_Class = 'SimpleSAMLphp';
+      wfLoadExtension( 'PluggableAuth' );
+
+      ### SimpleSAMLphp Extension Settings ###
+      $wgSimpleSAMLphp_InstallDir = '{{ .Values.rootDir }}/vendor/simplesamlphp/simplesamlphp';
+      $wgSimpleSAMLphp_AuthSourceId = {{ .Values.saml.authSourceID | quote }};
+      $wgSimpleSAMLphp_RealNameAttribute = {{ .Values.saml.realnameAttr | quote }};
+      $wgSimpleSAMLphp_EmailAttribute = {{ .Values.saml.emailAttr | quote }};
+      $wgSimpleSAMLphp_UsernameAttribute = {{ .Values.saml.usernameAttr | quote }};
+
+{{ if .Values.mediawiki.saml.groupMap -}}
+      $wgSimpleSAMLphp_GroupMap = array(
+      {{- $group_fields := .Values.mediawiki.saml.groupMap | split ':' -}}
+      {{- $wiki_group := (index $group_fields 0) -}}
+      {{- $saml_attr := (index $group_fields 1) -}}
+      {{- $saml_values := (index $group_fields 2) | split ',' -}}
+        {{ $wiki_group | quote }} => array(
+          {{ $saml_attr | quote }} => array(
+{{- range $idx, $value := $saml_values }}
+            {{ $value | quote }},
+{{- end }}
+          ),
+        ),
+      );
+{{ end }}
+
+      wfLoadExtension( 'SimpleSAMLphp' );
+{{- end }}
+    ?>
+
+  triumf-extension-confirm-account.php: |
+    <?php
+
+{{- if .Values.mediawiki.extensions.confirmAccount.enabled }}
+      require_once( 'extensions/ConfirmAccount/ConfirmAccount.php' );
+
+{{- if .Values.mediawiki.extensions.confirmAccount.wgRejectedAccountMaxAge | quote | ne "" }}
+      $wgRejectedAccountMaxAge = {{ .Values.mediawiki.extensions.confirmAccount.wgRejectedAccountMaxAge }};
+{{- end }}
+
+{{- range $confirmAccount, $options := .Values.mediawiki.extensions.confirmAccount.wgConfirmAccountRequestFormItems }}
+{{- range $optionName, $optionVal := $options }}
+      $wgConfirmAccountRequestFormItems[{{ $confirmAccount | quote }}][{{ $optionName | quote }}] = {{ $optionVal }};
+{{- end }}
+{{- end }}
+
+{{- if .Values.mediawiki.extensions.confirmAccount.wgConfirmAccountContact }}
+      $wgConfirmAccountContact = {{ .Values.mediawiki.extensions.confirmAccount.wgConfirmAccountContact | quote }};
+{{- end }}
+
+{{- if .Values.mediawiki.extensions.confirmAccount.requestAccount }}
+      $wgHooks['PersonalUrls'][] = 'onPersonalUrls';
+
+      function onPersonalUrls( array &$personal_urls, Title $title, SkinTemplate $skin  ) {
+        // Add a link to Special:RequestAccount if a link exists for login
+        if ( isset( $personal_urls['login'] ) || isset( $personal_urls['anonlogin'] ) ) {
+          $personal_urls['createaccount'] = array(
+            'text' => wfMessage( 'requestaccount' )->text(),
+            'href' => SpecialPage::getTitleFor( 'RequestAccount' )->getFullURL()
+          );
+        }
+        return true;
+      }
+{{- end }}
+
+{{- end }}
+
+    ?>
+
+  triumf-extension-usermerge.php: |
+    <?php
+{{ if .Values.mediawiki.extensions.userMerge.enabled }}
+      wfLoadExtension( 'UserMerge' );
+
+{{- range $groupName, $functions := .Values.mediawiki.wgGroupPermissions }}
+{{- if hasKey $functions "usermerge" }}
+      // This setting is printed here for informational purposes. The actual
+      // config setting is located in triumf-content.php
+      // $wgGroupPermissions[{{ $groupName | quote }}]["usermerge"] = {{ if index $functions "usermerge" }}true{{- else -}}false{{- end }};
+{{- end }}
+{{- end }}
+
+{{- if .Values.mediawiki.extensions.userMerge.wgUserMergeProtectedGroups }}
+      $wgUserMergeProtectedGroups = array(
+{{- range $idx, $groupName := .Values.mediawiki.extensions.userMerge.wgUserMergeProtectedGroups }}
+        {{ $groupName | quote }},
+{{- end }}
+      );
+{{- end }}
+
+{{- end }}
+    ?>
+
+  triumf-extension-math.php: |
+    <?php
+{{- if .Values.mediawiki.extensions.math.enabled }}
+      wfLoadExtension( 'Math' );
+
+{{- if and .Values.mediawiki.wgDefaultUserOptions (hasKey .Values.mediawiki.wgDefaultUserOptions "math") }}
+      // Real value set in triumf-content.php
+      $wgDefaultUserOptions['math'] = {{ .Values.mediawiki.wgDefaultUserOptions.math | quote }};
+{{- end }}
+
+{{- if .Values.mediawiki.extensions.math.wgMathFullRestbaseURL }}
+      $wgMathFullRestbaseURL = {{ .Values.mediawiki.extensions.math.wgMathFullRestbaseURL | quote }};
+{{- end }}
+
+{{- if .Values.mediawiki.extensions.math.wgMathoidCli }}
+      // Please create a config.yaml in advance. Templates are in the Mathoid repository.
+      $wgMathoidCli = [
+{{- range $idx, $arg := .Values.mediawiki.extensions.math.wgMathoidCli }}
+        {{ $arg | quote }},
+{{- end }}
+      ];
+{{- end }}
+
+{{- if .Values.mediawiki.extensions.math.wgMaxShellMemory }}
+      // Raise MediaWiki's memory limit
+      $wgMaxShellMemory = {{ .Values.mediawiki.extensions.math.wgMaxShellMemory }};
+{{- end }}
+
+{{- end }}
+    ?>
+
+  triumf-extension-mathjax.php: |
+    <?php
+{{- if .Values.mediawiki.extensions.mathjax.enabled }}
+    wfLoadExtension( 'MathJax' );
+{{- if .Values.mediawiki.extensions.mathjax.wgMjSize }}
+    # Change default font size (default: 100)
+    $wgMjSize = {{ .Values.mediawiki.extension.mathjax.wgMjSize }};
+{{- end }}
+    # Use local MathJax installation (default: false, use CDN)
+{{- if .Values.mediawiki.extensions.mathjax.wgMjUseCDN }}
+    $wgMjUseCDN = {{ .Values.mediawiki.extensions.mathjax.wgMjUseCDN }};
+{{- end }}
+{{- end }}
+    ?>
+  triumf-extension-nativesvghandler.php: |
+    <?php
+{{- if .Values.mediawiki.extensions.nativeSvgHandler.enabled }}
+      require_once( 'extensions/NativeSvgHandler/NativeSvgHandler.php' );
+
+{{- if .Values.mediawiki.extensions.nativeSvgHandler.wgNativeSvgHandlerEnableLinks | quote | ne "" }}
+      $wgNativeSvgHandlerEnableLinks = {{ if .Values.mediawiki.extensions.nativeSvgHandler.wgNativeSvgHandlerEnableLinks -}}true{{- else -}}false{{- end }};
+{{- end }}
+{{- end }}
+    ?>
+
+  triumf-extension-svgedit.php: |
+    <?php
+{{- if .Values.mediawiki.extensions.SVGEdit.enabled }}
+      require_once( 'extensions/SVGEdit/SVGEdit.php' );
+
+{{- if .Values.mediawiki.extensions.SVGEdit.wgSVGEditEditor }}
+      $wgSVGEditEditor = {{ .Values.mediawiki.extensions.SVGEdit.wgSVGEditEditor | quote }};
+{{- end }}
+
+{{- if .Values.mediawiki.extensions.SVGEdit.wgSVGEditInline | quote | ne "" }}
+      $wgSVGEditInline = {{ if .Values.mediawiki.extensions.SVGEdit.wgSVGEditInline -}}true{{- else -}}false{{- end }};
+{{- end }}
+
+{{- end }}
+    ?>
+
+  triumf-extension-categorytree.php: |
+    <?php
+
+{{- if .Values.mediawiki.extensions.categoryTree.enabled }}
+      wfLoadExtension('CategoryTree');
+
+      $wgCategoryTreeMaxChildren = {{ .Values.mediawiki.extensions.categoryTree.wgCategoryTreeMaxChildren }};
+
+      $wgCategoryTreeAllowTag = {{ if .Values.mediawiki.extensions.categoryTree.wgCategoryTreeAllowTag }}true{{- else -}}false{{- end }};
+
+      $wgCategoryTreeDynamicTag = {{ if .Values.mediawiki.extensions.categoryTree.wgCategoryTreeDynamicTag }}true{{- else -}}false{{- end }};
+
+      $wgCategoryTreeDisableCache = {{ if .Values.mediawiki.extensions.categoryTree.wgCategoryTreeDisableCache }}{{ .Values.mediawiki.extensions.categoryTree.wgCategoryTreeDisableCache }}{{- else -}}false{{- end }};
+
+      $wgCategoryTreeUseCache = {{ if .Values.mediawiki.extensions.categoryTree.wgCategoryTreeUseCache }}true{{- else -}}false{{- end }};
+
+      $wgCategoryTreeMaxDepth = array(
+{{- range $category, $depth := .Values.mediawiki.extensions.categoryTree.wgCategoryTreeMaxDepth }}
+{{- if eq $category "categories" }}
+        // CT_MODE_CATEGORIES
+        0 => {{ $depth }},
+{{- else if eq $category "pages" }}
+        // CT_MODE_PAGES
+        10 => {{ $depth }},
+{{- else if eq $category "all" }}
+        // CT_MODE_ALL
+        20 => {{ $depth }},
+{{- else if eq $category "parents" }}
+        // CT_MODE_PARENTS
+        100 => {{ $depth }},
+{{- end -}}
+{{ end }}
+      );
+
+{{- if eq .Values.mediawiki.extensions.categoryTree.wgCategoryTreeDefaultMode "categories" }}
+      // CT_MODE_CATEGORIES
+      $wgCategoryTreeDefaultMode = 0;
+{{- else if .Values.mediawiki.extensions.categoryTree.wgCategoryTreeDefaultMode "pages" }}
+      // CT_MODE_PAGES
+      $wgCategoryTreeDefaultMode = 10;
+{{- else if .Values.mediawiki.extensions.categoryTree.wgCategoryTreeDefaultMode "all" }}
+      // CT_MODE_ALL
+      $wgCategoryTreeDefaultMode = 20;
+{{- end }}
+
+      $wgCategoryTreeForceHeaders = {{ if .Values.mediawiki.extensions.categoryTree.wgCategoryTreeForceHeaders }}true{{- else -}}false{{- end }};
+
+{{- if .Values.mediawiki.extensions.categoryTree.wgCategoryTreeSidebarRoot }}
+      $wgCategoryTreeSidebarRoot = {{ .Values.mediawiki.extensions.categoryTree.wgCategoryTreeSidebarRoot | quote }};
+{{- end }}
+
+{{- range $option, $value := .Values.mediawiki.extensions.categoryTree.wgCategoryTreeDefaultOptions }}
+      $wgCategoryTreeDefaultOptions[{{ $option | quote }}] = {{ $value | quote }};
+{{- end }}
+
+{{- range $option, $value := .Values.mediawiki.extensions.categoryTree.wgCategoryTreePageOptions }}
+      $wgCategoryTreePageOptions[{{ $option | quote }}] = {{ $value | quote }};
+{{- end }}
+
+{{- range $option, $value := .Values.mediawiki.extensions.categoryTree.wgCategoryTreeSpecialPageOptions }}
+      $wgCategoryTreeSpecialPageOptions[{{ $option | quote }}] = {{ $value | quote }};
+{{- end }}
+
+{{- range $option, $value := .Values.mediawiki.extensions.categoryTree.wgCategoryTreeSidebarOptions }}
+      $wgCategoryTreeSpecialSidebarOptions[{{ $option | quote }}] = {{ $value | quote }};
+{{- end }}
+
+      $wgCategoryTreeDisableCache = {{ if kindIs "int" .Values.mediawiki.extensions.categoryTree.wgCategoryTreeDisableCache }}{{ .Values.mediawiki.extensions.categoryTree.wgCategoryTreeDisableCache }}{{- else -}}true{{- end }};
+
+{{- end }}
+    ?>
+
+  triumf-extension-semanticmediawiki.php: |
+    <?php
+{{- if .Values.mediawiki.extensions.semanticMediaWiki.enabled }}
+{{- if .Values.ingress.enabled }}
+      enableSemantics({{ (index .Values.ingress.hosts 0).hostname | quote }});
+{{- else if .Values.mediawiki.extensions.semanticMediaWiki.hostname }}
+      enableSemantics({{ .Values.mediawiki.extensions.semanticMediaWiki.hostname | quote }});
+{{- end }}
+
+{{- if not .Values.mediawiki.extensions.semanticMediaWiki.smwgEnabledEditPageHelp }}
+      $smwgEnabledEditPageHelp = false;
+{{- else }}
+      $smwgEnabledEditPageHelp = true;
+{{- end }}
+{{- end }}
+    ?>
+
+  triumf-extension-approvedrevs.php: |
+    <?php
+
+{{- if .Values.mediawiki.extensions.approvedRevs.enabled }}
+
+      wfLoadExtension( 'ApprovedRevs' );
+
+      $egApprovedRevsAutomaticApprovals = {{ if .Values.mediawiki.extensions.approvedRevs.egApprovedRevsAutomaticApprovals -}}true{{- else -}}false{{- end }};
+      $egApprovedRevsShowApproveLatest = {{ if .Values.mediawiki.extensions.approvedRevs.egApprovedRevsShowApproveLatest -}}true{{- else -}}false{{- end }};
+      $egApprovedRevsBlankIfUnapproved = {{ if .Values.mediawiki.extensions.approvedRevs.egApprovedRevsBlankIfUnapproved -}}true{{- else -}}false{{- end }};
+      $egApprovedRevsShowNotApprovedMessage = {{ if .Values.mediawiki.extensions.approvedRevs.egApprovedRevsShowNotApprovedMessage -}}true{{- else -}}false{{- end }};
+
+{{- if .Values.mediawiki.extensions.approvedRevs.egApprovedRevsNamespaces }}
+      $egApprovedRevsNamespaces = array_merge(
+        $egApprovedRevsNamespaces,
+        array(
+{{- range $idx, $ns := .Values.mediawiki.extensions.approvedRevs.egApprovedRevsNamespaces }}
+          {{ $ns | quote }},
+{{- end }}
+        ),
+      );
+{{- end }}
+
+{{- if .Values.mediawiki.extensions.approvedRevs.egApprovedRevsSelfOwnedNamespaces }}
+      $egApprovedRevsSelfOwnedNamespaces = array(
+{{- range $idx, $ns := .Values.mediawiki.extensions.approvedRevs.egApprovedRevsSelfOwnedNamespaces }}
+          {{ $ns | quote }},
+{{- end }}
+      );
+{{- end }}
+
+      # Any wgGroupPermissions definitions that apply to the approvedrevs
+      # extension are repeated here as comments for convenience. The actual
+      # wgGroupPermissions definition is set in triumf-content.php
+{{- $userRightsList := list "approverevisions" "viewlinktolatest" "viewapprover" -}}
+{{- range $group, $perm := .Values.mediawiki.wgGroupPermissions }}
+{{ range $permKey, $permVal := $perm }}
+{{- if has $permKey $userRightsList }}
+      # $wgGroupPermissions['*'][{{ $permKey | quote }}] = {{ if $permVal -}}true{{- else -}}false{{- end }};
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- end }}
+    ?>
+
+  triumf-extension-wikieditor.php: |
+    <?php
+
+{{- if .Values.mediawiki.extensions.wikiEditor.enabled }}
+      wfLoadExtension('WikiEditor');
+
+{{- if has "usebetatoolbar" .Values.mediawiki.wgHiddenPrefs }}
+      # wgHiddenPrefs "usebetatoolbar" option repeated here as a comment for
+      # convenience. The actual setting is located in triumf-content.php
+      # $wgHiddenPrefs[] = "usebetatoolbar"
+{{- end }}
+
+{{- end }}
+    ?>
+
+  triumf-extension-replace-text.php: |
+    <?php
+{{- if .Values.mediawiki.extensions.replaceText.enabled }}
+      wfLoadExtension('ReplaceText');
+
+{{- if .Values.mediawiki.extensions.replaceText.wgReplaceTextUser }}
+      $wgReplaceTextUser = {{ .Values.mediawiki.extensions.replaceText.wgReplaceTextUser | quote }};
+{{- end }}
+{{- end }}
+    ?>
+
+  triumf-extension-bread-crumbs2.php: |
+    <?php
+{{- if .Values.mediawiki.extensions.breadCrumbs2.enabled }}
+      wfLoadExtension('BreadCrumbs2');
+{{- end }}
+    ?>
+
+  triumf-extension-syntaxhighlight.php: |
+    <?php
+{{- if .Values.mediawiki.extensions.syntaxHighlight.enabled }}
+      wfLoadExtension('SyntaxHighlight');
+{{- end }}
+
+    ?>

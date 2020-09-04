@@ -1,0 +1,7 @@
+mediawiki:
+  wgDefaultUserOptions:
+    math: 'png'
+  extensions:
+    math:
+      enabled: true
+

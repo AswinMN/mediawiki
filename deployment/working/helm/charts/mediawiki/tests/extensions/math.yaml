@@ -1,0 +1,12 @@
+mediawiki:
+  wgDefaultUserOptions:
+    math:
+      mathml
+  extensions:
+    math:
+      enabled: true
+      wgMathFullRestbaseURL: https://en.wikipedia.org/api/rest_
+      wgMathoidCli:
+      - /path/to/mathoid/cli.js
+      - '-c'
+      - /path/to/mathoid/config.yaml

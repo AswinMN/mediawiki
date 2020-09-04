@@ -1,0 +1,9 @@
+mediawiki:
+  wgGroupPermissions:
+    _all:
+      approverevisions: true
+      viewlinktolatest: false
+      edit: true
+  extensions:
+    approvedRevs:
+      enabled: true

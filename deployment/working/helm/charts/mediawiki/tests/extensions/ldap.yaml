@@ -1,0 +1,31 @@
+mediawiki:
+  auth:
+    wgPluggableAuth_EnableLocalLogin: false
+    wgPluggableAuth_ButtonLabelMessage: "Login"
+    ldap:
+      enabled: true
+      config:
+        TRIUMF:
+          server:
+            - ldap1.example.ca
+            - ldap2.example.ca
+          basedn: "dc=example,dc=ca"
+          userbasedn: "ou=Users,dc=triumf,dc=ca"
+          searchattribute: "uid"
+          searchstring: "uid=USER-NAME,ou=Users,dc=triumf,dc=ca"
+          usernameattribute: "uid"
+          realnameattribute: "cn"
+          emailattribute: "mail"
+          grouprequest: "MediaWiki\\Extension\\LDAPProvider\\UserGroupsRequest\\Configurable::factory"
+          groupbasedn: "ou=Groups,dc=example,dc=ca"
+          groupobjectclass: "accessGroup"
+          groupattribue: "member"
+          authorization:
+            rules:
+              groups:
+                required:
+                  - cn=group,ou=org,ou=Groups,dc=example,dc=ca
+          userinfo:
+            attributes-map:
+              email: mail
+              realname: fullname

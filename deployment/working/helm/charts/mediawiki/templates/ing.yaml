@@ -1,0 +1,54 @@
+---
+{{  if and .Values.backups.www.enabled (upper .Values.backups.www.authType | eq "BASIC") }}
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: {{ template "mediawiki.fullname" . }}-backups
+  annotations:
+    ingress.kubernetes.io/auth-type: {{ .Values.backups.www.authType }}
+    ingress.kubernetes.io/auth-secret: {{ template "mediawiki.fullname" . }}-backup
+    ingress.kubernetes.io/auth-realm: {{ .Values.backups.www.authRealm }}
+{{- if .Values.backups.www.ingressAnnotations }}
+{{ .Values.backups.www.ingressAnnotations | toYaml | indent 4 }}
+{{- end }}
+{{- end }}
+---
+{{- if .Values.ingress.enabled }}
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: {{ template "mediawiki.fullname" . }}
+  annotations:
+{{- if .Values.ingress.ingress }}
+{{ .Values.ingress.annotations | toYaml | indent 4 }}
+{{- end }}
+spec:
+  rules:
+{{- $toplevel := . }}
+{{- $mediawiki := .Values.mediawiki }}
+    - host: {{ .Values.hostname }}
+      http:
+        paths:
+        - path: {{ default "/" $mediawiki.wgScriptPath | quote }}
+          backend:
+            serviceName: {{ template "mediawiki.fullname" . }}
+            servicePort: 8080
+{{- range $idx, $host := .Values.ingress.additionalHosts }}
+    - host: {{ $host.hostname }}
+      http:
+        paths:
+        - path: {{ default "/" $mediawiki.wgScriptPath | quote }}
+          backend:
+            serviceName: {{ template "mediawiki.fullname" $toplevel }}
+            servicePort: 8080
+{{- end }}
+{{- if .Values.ingress.tls }}
+  tls:
+    - secretName: {{ .Values.ingress.tls.secretName }}
+      hosts:
+        - {{ .Values.hostname }}
+{{- range $idx, $host := .Values.ingress.additionalHosts }}
+        - {{ $host.hostname }}
+{{- end }}
+{{- end }}
+{{- end -}}

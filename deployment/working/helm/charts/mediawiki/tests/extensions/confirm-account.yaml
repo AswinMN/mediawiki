@@ -1,0 +1,19 @@
+mediawiki:
+  wgWhitelistRead:
+  - "Special:RequestAccount"
+  extensions:
+    confirmAccount:
+      enabled: true
+      wgConfirmAccountContact: dthomson@triumf.ca
+      wgConfirmAccountRequestFormItems:
+        Biography:
+          enabled: false
+        CV:
+          enabled: false
+        Notes:
+          enabled: false
+        Links:
+          enabled: false
+        TermsOfService:
+          enabled: false
+      requestAccount: true

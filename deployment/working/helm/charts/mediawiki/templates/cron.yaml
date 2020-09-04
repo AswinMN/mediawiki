@@ -1,0 +1,132 @@
+{{- if and .Values.backups.enabled .Values.backups.storageClass | and .Values.backups.size | and .Values.persistence.enabled }}
+---
+apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  name: {{ template "mediawiki.fullname" . }}-backups-cron
+  labels:
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version }}"
+spec:
+  concurrencyPolicy: Forbid
+  schedule: {{ .Values.backups.schedule | default "0 * * * *" | quote }}
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: mediawiki
+            triumf.ca/mediawiki-hostname: {{ if .Values.ingress.hosts -}}{{ (index .Values.ingress.hosts 0).hostname | default "localhost" }}{{- end }}
+            triumf.ca/mediawiki-site-path: {{ default "/" .Values.mediawiki.wgScriptPath | trimPrefix "/" | replace "/" "-" | quote }}
+            cron: backup
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: mediawiki-backups
+            image: alpine:3.7
+            imagePullPolicy: {{ .Values.imagePullPolicy }}
+            env:
+            - name: WG_DB_NAME
+              value: {{ .Values.mediawiki.wgDBName }}
+            command:
+            - sh
+            - "-c"
+            - |
+              set -x
+
+              apk add --no-cache bash bc coreutils mysql-client
+
+              DEBUG=0
+              DIR=/backups
+              MAX_SIZE=$(df --total --block-size=m "${DIR}" | grep ^total|awk '{print $2}' | sed 's/M$//')
+
+              if [ -z "${DIR}" ]; then
+                echo "No directory provided" >&2
+                exit 1
+              fi
+
+              if [ -z "${MAX_SIZE}" ]; then
+                echo "No valid maximum size provided for the directory" >&2
+                exit 1
+              fi
+
+              LOCKFILE=$(find $DIR -name .lock -mmin +60 -maxdepth 0)
+              if [ -f "${DIR}/.lock" ] && [ -z "${LOCKFILE}" ]; then
+                exit 0
+              fi
+
+              touch "${DIR}/.lock"
+
+              # SIZE_FACTOR is used to make sure we have enough space for 10%
+              # more than the largest existing file. This is a somewhat hacky
+              # solution we're using for now.
+              SIZE_FACTOR=1.1
+              EXPECTED_SIZE=-1
+
+              LARGEST_FILE=$(ls -lS --block-size=M ${DIR}/* | head -1 | awk '{print $5}' | sed 's/M$//');
+
+              if [ ! -z "${LARGEST_FILE}" ]; then
+                EXPECTED_SIZE=$(echo "${LARGEST_FILE} * ${SIZE_FACTOR}/1" | bc)
+              fi
+
+              [ $DEBUG -ne 0 ] && echo "EXPECTED_SIZE: ${EXPECTED_SIZE}" >&2
+
+              SPACE_USED="$(du -ms ${DIR} | awk '{print $1}')"
+              SPACE_AVAILABLE=$(echo "${MAX_SIZE} - ${SPACE_USED}" | bc)
+
+              while [ "${SPACE_AVAILABLE}" -lt "${EXPECTED_SIZE}" ]; do
+                oldest_file=$(ls -1tr "${DIR}/" | head -1)
+                num_files=$(ls -1 "${DIR}" | wc -l)
+
+                [ $DEBUG -ne 0 ] && echo "oldest_file: ${oldest_file}" >&2
+                [ $DEBUG -ne 0 ] && echo "num_files: ${num_files}" >&2
+                # Only one backup exists currently and there's no room to create a
+                # new one we'll consider this to be an error since it needs human
+                # intervention to know how safe it is to remove the only existing
+                # backup
+                if [ $num_files -lt 2 ]; then
+                  exit 1
+                fi
+
+                rm -f "${DIR}/${oldest_file}"
+
+                SPACE_USED="$(du -ms ${DIR} | awk '{print $1}')"
+                SPACE_AVAILABLE=$(echo "${MAX_SIZE} - ${SPACE_USED}" | bc)
+              done
+
+              backup_file="site-images=$(date +%s).tar.bz2"
+              errors=0
+              while ! tar -cvjf /backups/$backup_file -C /var/www/html/images .; do
+                rm -f /backups/$backup_file
+                oldest_file=$(ls -1tr "${DIR}/" | head -1)
+                num_files=$(ls -1 "${DIR}" | wc -l)
+
+                [ $DEBUG -ne 0 ] && echo "oldest_file: ${oldest_file}" >&2
+                [ $DEBUG -ne 0 ] && echo "num_files: ${num_files}" >&2
+                # Only one backup exists currently and there's no room to create a
+                # new one we'll consider this to be an error since it needs human
+                # intervention to know how safe it is to remove the only existing
+                # backup
+                if [ $num_files -lt 2 ]; then
+                  errors=1
+                  break
+                fi
+
+                rm -f "${DIR}/${oldest_file}"
+              done
+
+              rm -f "${DIR}/.lock"
+
+              exit $errors
+            volumeMounts:
+            - name: wiki-backup-data
+              mountPath: /backups
+            - name: wiki
+              mountPath: /var/www/html/images
+          volumes:
+          - name: wiki-backup-data
+            persistentVolumeClaim:
+              claimName: {{ template "mediawiki.fullname" . }}-backup
+          - name: wiki
+            persistentVolumeClaim:
+              claimName: {{ template "mediawiki.fullname" . }}
+{{- end }}

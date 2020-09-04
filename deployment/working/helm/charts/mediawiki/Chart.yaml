@@ -1,0 +1,8 @@
+apiVersion: v1
+name: mediawiki
+version: 0.5.8
+icon: "https://www.mediawiki.org/wiki/Manual:$wgLogo#/media/File:MediaWiki_logo_without_tagline.png"
+description: Deploy a MediaWiki Server Instance
+maintainers:
+  - name: Dan Thomson
+    email: dthomson@triumf.ca

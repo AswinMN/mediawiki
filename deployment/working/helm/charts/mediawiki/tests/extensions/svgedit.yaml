@@ -1,0 +1,6 @@
+mediawiki:
+  extensions:
+    SVGEdit:
+      enabled: true
+      wgSVGEditEditor: https://ladd00.triumf.ca/svg-edit.googlecode.com/branches/2.6/editor/svg-editor.html
+      wgSVGEditInline: true

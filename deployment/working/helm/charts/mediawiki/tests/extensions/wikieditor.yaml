@@ -1,0 +1,6 @@
+mediawiki:
+  wgHiddenPrefs:
+  - usebetatoolbar
+  extensions:
+    wikiEditor:
+      enabled: true

@@ -1,0 +1,4 @@
+mediawiki:
+  extensions:
+    nativeSvgHandler:
+      enabled: true

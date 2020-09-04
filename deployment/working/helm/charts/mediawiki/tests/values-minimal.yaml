@@ -1,0 +1,15 @@
+imageTag: 1.34
+# Minimal install test values
+hostname: wiki-test.triumf.ca
+ingress:
+  enabled: true
+mediawiki:
+  wgEmergencyContact: noreply@triumf.ca
+  wgPasswordSender: noreply@triumf.ca
+  wgScriptPath: /
+  adminPassword: admin123
+nginx:
+  realIPFrom:
+    - 0.0.0.0/0
+registry: 
+  name: registry.triumf.ca

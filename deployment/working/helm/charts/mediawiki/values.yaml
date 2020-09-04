@@ -1,0 +1,250 @@
+gitToken: null
+image: registry.triumf.ca/docker/mediawiki
+imageTag: "1.34"
+imagePullPolicy: IfNotPresent
+# Main site hostname. Other additional hostnames
+# should be added to ingress.additionalHostnames
+hostname: wiki.example.com
+replicas: 1
+rootDir: /var/www/html
+registry: {}
+service:
+  port: 8080
+rbac:
+  enabled: no
+  serviceAccountName: null
+# name: registry.triumf.ca
+# user: registry-user
+# password: registry-password
+mediawiki:
+  auth:
+    wgAuthRemoteuserAllowUserSwitch: true
+    wgPluggableAuth_EnableLocalLogin: true
+    wgPluggableAuth_ButtonLabelMessage: null
+    ldap:
+      enabled: false
+
+      LDAPAuthorizationAutoAuthRemoteUserStringParser: "username-at-domain"
+      LDAPAuthentication2UsernameNormalizer: ""
+      LDAPAuthentication2AllowLocalLogin: false
+      config: {}
+# eg.
+#      config:
+#        triumf.ca:
+#          server:
+#            - misldap1.triumf.ca
+#            - misldap2.triumf.ca
+#          basedn: "dc=triumf,dc=ca"
+#          userbasedn: "ou=Users,dc=triumf,dc=ca"
+#          searchattribute: "uid"
+#          usernameattribute: "uid"
+#          realnameattribute: "fullname"
+#          emailattribute: "mail"
+#          authorization:
+#            rules:
+#              groups:
+#                required:
+#                  - cn=webAdmin,ou=Groups,dc=triumf,dc=ca
+#                  - cn=ribops,ou=wiki,ou=Groups,dc=triumf,dc=ca
+#                  - cn=ccn,ou=org,ou=Groups,dc=triumf,dc=ca
+#          userinfo:
+#            attributes-map:
+#              email: mail
+#              realname: fullname
+  extensions:
+    simpleSAMLphp:
+      enabled: false
+    confirmAccount:
+      enabled: false
+      wgRejectedAccountMaxAge: "0"
+      wgConfirmAccountContact: null
+      requestAccount: false
+      biography:
+        enabled: true
+        minWords: 10
+    userMerge:
+      enabled: false
+      wgUserMergeProtectedGroups: []
+    math:
+      enabled: false
+      wgMathFullRestbaseURL: 'https://en.wikipedia.org/api/rest_'
+      wgMathMathMLUrl: 'https://mathoid-beta.wmflabs.org/'
+    mathjax:
+      enabled: false
+      wgMjSize: 100
+      wgMjUseCDN: false
+    nativeSvgHandler:
+      enabled: false
+      wgNativeSvgHandlerEnableLinks: null
+    SVGEdit:
+      enabled: false
+    categoryTree:
+      enabled: false
+      wgCategoryTreeMaxChildren: 200
+      wgCategoryTreeAllowTag: true
+      wgCategoryTreeDynamicTag: false
+      # 6 hour default:
+      # Disable completely with false value (inc. null, 0)
+      wgCategoryTreeDisableCache: 21600
+      wgCategoryTreeMaxDepth:
+        categories: 2
+        pages: 1
+        all: 1
+        parents: 1
+      wgCategoryTreeDefaultMode: categories
+      wgCategoryTreeForceHeaders: false
+      # Note from docs:
+      # root category to use for integrating the category tree in the sidebar
+      # (since rev:36920, July 2008). If not set, no tree is integrated (this
+      # is the default). Integrating a CategoryTree into the sidebar only works
+      # with skins based upon SkinTemplate, that is, Modern, Monobook, Chick,
+      # Simple, and MySkin, but not Standard, Nostalgia or CologneBlue.
+      wgCategoryTreeSidebarRoot:
+    semanticMediaWiki:
+      enabled: false
+      smwgEnabledEditPageHelp: true
+    approvedRevs:
+      enabled: false
+      egApprovedRevsAutomaticApprovals: false
+      egApprovedRevsShowApproveLatest: true
+      egApprovedRevsBlankIfUnapproved: true
+      egApprovedRevsShowNotApprovedMessage: true
+      egApprovedRevsNamespaces: []
+      egApprovedRevsSelfOwnedNamespaces: []
+    wikiEditor:
+      enabled: false
+    replaceText:
+      enabled: false
+    breadCrumbs2:
+      enabled: false
+    syntaxHighlight:
+      enabled: false
+  port: 8081
+  admin: admin
+  adminPassword: abc123
+  wgConfirmAccountContact: null
+  wgDBAdminUser: root
+  wgDBAdminPassword: admin-db-abc123
+  wgDBName: wiki
+  wgDBPort: 3306
+  wgDBPassword: mediawiki-abc123
+  wgDBPrefix: wiki_
+  wgDBServers: ["mysql1"]
+  # - mysql-1
+  # - mysql-2
+  wgDBType: mysql
+  wgDBUser: mediawiki
+  wgDefaultUserOptions:
+    math: mathml
+  wgDefaultSkin: vector
+  wgEmergencyContact: emergency@site.com
+  wgEnableUploads: false
+  wgEnableUserEmail: true
+  wgEnotifUserTalk: false
+  wgEnotifWatchlist: false
+  wgGroupPermissions: {}
+  wgHiddenPrefs: []
+  wgLanguageCode: en
+  wgLocaltimezone: "America/Vancouver"
+  wgMainCacheType: CACHE_NONE
+  wgMemCachedServers: []
+  # - hostname: cache.example.com
+  #   weight: 1
+  wgMaxUploadSize: {}
+  wgPasswordSender: no-reply@site.com
+  wgRunJobsAsync: true
+  wgServer: "//127.0.0.1"
+  wgScriptPath: "/"
+  wgSessionCacheType: CACHE_DB
+  wgSessionsInObjectCache: true
+  wgShowExceptionDetails: false
+  wgShowDBErrorBacktrace: false
+  wgShowSQLErrors: false
+  wgSitename: "Wiki Site"
+  wgUploadPath: null
+  wgWhitelistRead: []
+  wgInvalidUsernameCharacters: '@#€'
+internalIPs:
+  - 172.16.0.0/12
+allowIPs: []
+allowIPToken: null
+apache:
+  healthChecksum: Fi6Xohthoshoh8CaKaijeeJoopu1jea2ahGh4HohdoedaeDu
+  authName: "Identity"
+  denyImages: false
+  readinessProbe:
+    timeoutSeconds: 1
+    initialDelaySeconds: 30
+    periodSeconds: 10
+  livenessProbe:
+    timeoutSeconds: 1
+    initialDelaySeconds: 30
+    periodSeconds: 10
+  ldap:
+    caCertificate: null
+    enabled: false
+    requireGroups: []
+    requireValidUser: false
+    baseDN: ou=users,dc=example,dc=com
+    userID: uid
+    objectClass: "(objectClass=person)"
+    groupAttribute: member
+    groupAttributeIsDN: true
+    servers:
+      - ldap1.example.com
+ingress:
+  enabled: false
+  additionalHosts: []
+  annotations: {}
+  #    ingress.kubernetes.io/proxy-body-size: {{ .Values.ingress.proxyBodySize | quote }}
+  #    ingress.kubernetes.io/proxy-read-timeout: {{ .Values.ingress.proxyReadTimeout }}
+  #    ingress.kubernetes.io/proxy-send-timeout: {{ .Values.ingress.proxySendTimeout }}
+  #    kubernetes.io/ingress.class: "nginx"
+  #    cert-manager.io/cluster-issuer: {{ .Values.ingress.letsEncrypt.issuer | quote }}
+  tls:
+    enabled: true
+    secretName: wiki-tls
+backups:
+  enabled: false
+  schedule: "0 * * * *"
+  size: 8Gi
+  storageClass: "glusterfs-storage"
+  www:
+    enabled: true
+    ingressAnnotations: {}
+    path: /backups
+    authType: basic # basic or LDAP
+    authRealm: "Authentication Required"
+    basic:
+      htpasswd: null # Needs to be generated externally
+      #      password: abc123
+    ldap:
+      requireGroups: []
+      requireValidUser: false
+      baseDN: ou=users,dc=example,dc=com
+      userID: uid
+      objectClass: "(objectClass=person)"
+      servers:
+        - ldap1.example.com
+persistence:
+  enabled: false
+  claimName: null
+  size: 1Gi
+  storageClass: "glusterfs-storage"
+  accessModes:
+    - ReadWriteOnce
+# NOTE: Because of breaking changes in Helm, values can't simply be empty
+# anymore. As a workaround, the values listed here should be considered
+# the euivalent of unset values. This chart will treat any of the below
+# values as unset if they are left at their current defaults.
+migration:
+  url: "invalid"
+  ip: "invalid"
+  username: "empty"
+  password: "emtpy"
+# eg.
+# url: https://my.host.com/wiki-image-dump.tar.bz2
+# ip: 127.0.0.1
+# username: migration-user
+# password: migration-pass
+debugging: false

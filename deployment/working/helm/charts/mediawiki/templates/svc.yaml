@@ -1,0 +1,18 @@
+kind: Service
+apiVersion: v1
+metadata:
+  name: {{ template "mediawiki.fullname" . }}
+  labels:
+    app: mediawiki
+    triumf.ca/hostname: {{ .Values.hostname }}
+    triumf.ca/site-path: {{ default "/" .Values.mediawiki.wgScriptPath | trimPrefix "/" | replace "/" "-" | quote }}
+spec:
+  selector:
+    app: mediawiki
+    triumf.ca/hostname: {{ .Values.hostname }}
+    triumf.ca/path: {{ default "/" .Values.mediawiki.wgScriptPath | trimPrefix "/" | replace "/" "-" | quote }}
+  ports:
+  - name: http
+    protocol: TCP
+    port: {{ .Values.service.port }}
+    targetPort: 8080

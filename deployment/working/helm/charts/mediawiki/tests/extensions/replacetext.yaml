@@ -1,0 +1,9 @@
+mediawiki:
+  extensions:
+    replaceText:
+      enabled: true
+  wgGroupPermissions:
+    bureaucrat:
+      replacetext: true
+
+

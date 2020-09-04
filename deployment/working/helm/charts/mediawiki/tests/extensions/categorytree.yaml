@@ -1,0 +1,32 @@
+mediawiki:
+  extensions:
+    categoryTree:
+      enabled: true
+      wgCategoryTreeMaxChildren: 200
+      wgCategoryTreeAllowTag: true
+      wgCategoryTreeDynamicTag: false
+      # 6 hour default:
+      # Disable completely with false value (inc. null, 0)
+      wgCategoryTreeDisableCache: 21600
+      wgCategoryTreeMaxDepth:
+        categories: 2
+        pages: 1
+        all: 1
+        parents: 1
+      wgCategoryTreeDefaultMode: categories
+      wgCategoryTreeForceHeaders: false
+      # Note from docs:
+      # root category to use for integrating the category tree in the sidebar
+      # (since rev:36920, July 2008). If not set, no tree is integrated (this
+      # is the default). Integrating a CategoryTree into the sidebar only works
+      # with skins based upon SkinTemplate, that is, Modern, Monobook, Chick,
+      # Simple, and MySkin, but not Standard, Nostalgia or CologneBlue.
+      wgCategoryTreeSidebarRoot: 'Category:Sidebar'
+      wgCategoryTreeDefaultOptions:
+        mode: pages
+      wgCategoryTreePageOptions:
+        depth: 1.0
+      wgCategoryTreeSpecialPageOptions:
+        hideroot: on
+      wgCategoryTreeSpecialSidebarOptions:
+        hideprefix: always

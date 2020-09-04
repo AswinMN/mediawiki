@@ -1,0 +1,9 @@
+mediawiki:
+  extensions:
+    semanticMediaWiki:
+      enabled: true
+ingress:
+  enabled: true
+  hosts:
+  - hostname: wiki.triumf.ca
+    secretName: wiki-triumf-ca-tls
