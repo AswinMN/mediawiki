@@ -1,0 +1,12 @@
+# Run all Mediawiki services
+- hosts: console
+  vars:
+    kube_config: '{{clusters.mz.kube_config}}'
+    install_name: 'mediawiki'
+    helm_chart: '{{charts_root}}/mediawiki'
+    is_template: true  
+    helm_namespace: 'default'
+    helm_values: '{{charts_root}}/mediawiki/values.yaml'
+    helm_strings: ''
+  roles:
+    - {role:  helm}
