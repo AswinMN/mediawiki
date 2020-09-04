@@ -1,4 +1,4 @@
-# mediawiki
+# Mediawiki
 
 Application Installer
 Introduction
